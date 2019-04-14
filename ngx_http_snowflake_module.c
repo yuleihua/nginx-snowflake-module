@@ -5,17 +5,17 @@
 #include <ngx_http.h>
 
 
-#define SNOWFLAKE_EPOCH 1546272000000 //2019/1/1
-#define SNOWFLAKE_TIME_BITS 41
-#define SNOWFLAKE_GROUPID_BITS 4
+#define SNOWFLAKE_EPOCH 1546272000 //2019/1/1
+#define SNOWFLAKE_TIME_BITS 32
+#define SNOWFLAKE_GROUPID_BITS 8
 #define SNOWFLAKE_WORKERID_BITS 6
-#define SNOWFLAKE_SEQUENCE_BITS 12
+#define SNOWFLAKE_SEQUENCE_BITS 17
 
 static ngx_int_t ngx_http_snowflake_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_snowflake_init(ngx_conf_t *cf);
 static void *ngx_http_snowflake_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_snowflake_group_id(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-static ngx_int_t snowflake_id(ngx_int_t group_id);
+static ngx_int_t snowflake_id(ngx_int_t group_id, ngx_log_t *log);
 
 
 typedef struct  {
@@ -125,7 +125,7 @@ ngx_http_snowflake_handler(ngx_http_request_t *r)
 
     ngx_str_set(&r->headers_out.content_type, "application/json");
 
-    ngx_snprintf(tmp_string, sizeof(tmp_string), "{\"id\":%l}", snowflake_id(my_conf->group_id));
+    ngx_snprintf(tmp_string, sizeof(tmp_string), "{\"id\":%l}", snowflake_id(my_conf->group_id, r->connection->log));
     content_length = ngx_strlen(tmp_string);
 
     /* send the header only, if the request type is http 'HEAD' */
@@ -168,29 +168,33 @@ ngx_http_snowflake_handler(ngx_http_request_t *r)
 
 
 static ngx_int_t
-snowflake_id(ngx_int_t group_id) {
-    struct timeval tp;
-    gettimeofday(&tp, NULL);
-    ngx_int_t millisecs = tp.tv_sec * 1000 + tp.tv_usec / 1000 - SNOWFLAKE_EPOCH;
+snowflake_id(ngx_int_t group_id, ngx_log_t *log) {
+    ngx_int_t secs = ngx_time() - SNOWFLAKE_EPOCH;
     ngx_int_t id = 0L;
     ngx_int_t gid = 0L;
 
     // Catch NTP clock adjustment that rolls time backwards and sequence number overflow
-    if ((ngx_snowflake.seq > ngx_snowflake.seq_max ) || ngx_snowflake.time > millisecs) {
-        while (ngx_snowflake.time >= millisecs) {
-            gettimeofday(&tp, NULL);
-            millisecs = tp.tv_sec * 1000 + tp.tv_usec / 1000 - SNOWFLAKE_EPOCH;
+    if ((ngx_snowflake.seq > ngx_snowflake.seq_max ) || ngx_snowflake.time > secs) {
+        while (ngx_snowflake.time >= secs) {
+            ngx_log_error(NGX_LOG_WARN, log, 0,
+            "sleep time, time:%l and secs:%l", ngx_snowflake.time, secs);
+
+            ngx_msleep(100);
+
+            secs = ngx_time() - SNOWFLAKE_EPOCH;
         }
     }
 
-    if (ngx_snowflake.time < millisecs) {
-        ngx_snowflake.time = millisecs;
+    if (ngx_snowflake.time < secs) {
+    	ngx_log_error(NGX_LOG_WARN, log, 0,
+    	            "reset, time:%l and secs:%l", ngx_snowflake.time, secs);
+        ngx_snowflake.time = secs;
         ngx_snowflake.seq = 0L;
     }
 
     gid = group_id%ngx_snowflake.group_id_mx;
 
-    id = (millisecs << ngx_snowflake.time_shift_bits)
+    id = (secs << ngx_snowflake.time_shift_bits)
             | (gid << ngx_snowflake.group_shift_bits)
             | (ngx_snowflake.worker_id << ngx_snowflake.worker_shift_bits)
             | (ngx_snowflake.seq++);
@@ -221,6 +225,21 @@ ngx_http_snowflake_init(ngx_conf_t *cf)
     ngx_snowflake.time_shift_bits   = SNOWFLAKE_GROUPID_BITS + SNOWFLAKE_WORKERID_BITS + SNOWFLAKE_SEQUENCE_BITS;
     ngx_snowflake.group_shift_bits = SNOWFLAKE_WORKERID_BITS + SNOWFLAKE_SEQUENCE_BITS;
     ngx_snowflake.worker_shift_bits = SNOWFLAKE_SEQUENCE_BITS;
+
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake time_max: \"%l\"", (1L << ngx_snowflake.time_shift_bits) - 1);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake seq_max: \"%l\"", ngx_snowflake.seq_max);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake seq: \"%l\"", ngx_snowflake.seq);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake time: \"%l\"", ngx_snowflake.time);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake worker_id: \"%l\"", ngx_snowflake.worker_id);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake worker_id_max: \"%l\"", max_worker_id);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0,
+                       "ngx_snowflake group_id_mx: \"%l\"", ngx_snowflake.group_id_mx);
 
     return NGX_OK;
 }

@@ -16,6 +16,7 @@ static ngx_int_t ngx_http_snowflake_init(ngx_conf_t *cf);
 static void *ngx_http_snowflake_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_snowflake_group_id(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t snowflake_id(ngx_int_t group_id, ngx_log_t *log);
+static char *ngx_http_snowflake_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 
 
 typedef struct  {
@@ -73,7 +74,7 @@ static ngx_http_module_t ngx_http_snowflake_module_ctx = {
     NULL,                                  /* merge server configuration */
 
 	ngx_http_snowflake_create_loc_conf,    /* create location configuration */
-    NULL                                   /* merge location configuration */
+	ngx_http_snowflake_merge_loc_conf      /* merge location configuration */
 };
 
 
@@ -116,6 +117,8 @@ ngx_http_snowflake_handler(ngx_http_request_t *r)
         ngx_log_error(NGX_LOG_EMERG, r->connection->log, 0, "group_id is empty!");
         return NGX_DECLINED;
     }
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0, "group id is %l", my_conf->group_id);
 
     rc = ngx_http_discard_request_body(r);
 
@@ -254,7 +257,21 @@ static char
 
     rv = ngx_conf_set_num_slot(cf, cmd, conf);
 
-    ngx_conf_log_error(NGX_LOG_INFO, cf, 0, "http_snowflake_group_id:%d", local_conf->group_id);
+    ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "http_snowflake_group_id:%d", local_conf->group_id);
 
     return rv;
+}
+
+
+static char *
+ngx_http_snowflake_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
+{
+	ngx_http_snowflake_loc_conf_t *prev = parent;
+	ngx_http_snowflake_loc_conf_t *conf = child;
+
+	ngx_conf_merge_value(conf->group_id,
+                              prev->group_id, NGX_CONF_UNSET);
+
+	ngx_conf_log_error(NGX_LOG_NOTICE, cf, 0, "new http_snowflake_group_id:%d", conf->group_id);
+    return NGX_CONF_OK;
 }
